@@ -1,0 +1,34 @@
+# MLB Predictive Analytics Engine
+# requirements.txt
+
+# --- Data ingestion ---
+pybaseball==2.2.7
+pandas==2.2.2
+numpy==1.26.4
+requests==2.31.0
+selenium==4.21.0
+webdriver-manager==4.0.1
+
+# --- Database ---
+sqlalchemy==2.0.30
+psycopg2-binary==2.9.9        # PostgreSQL driver
+alembic==1.13.1               # schema migrations
+
+# --- Feature engineering ---
+scipy==1.13.0
+
+# --- Modeling ---
+scikit-learn==1.5.0
+xgboost==2.0.3
+shap==0.45.1                  # explainability
+optuna==3.6.1                 # hyperparameter tuning
+
+# --- Utilities ---
+python-dotenv==1.0.1
+loguru==0.7.2
+tqdm==4.66.4
+joblib==1.4.2
+pyarrow==16.1.0               # fast parquet I/O for feature cache
+
+# --- Optional: experiment tracking ---
+# mlflow==2.13.0
