@@ -275,7 +275,7 @@ def refresh_rolling_features(
         batter_features.to_sql(
             "batter_rolling_features", con=engine,
             if_exists="replace", index=False,
-            method="multi", chunksize=5_000,
+            method="multi", chunksize=200,
         )
         logger.success(f"  Saved {len(batter_features):,} batter feature rows")
 
@@ -285,7 +285,7 @@ def refresh_rolling_features(
         pitcher_features.to_sql(
             "pitcher_rolling_features", con=engine,
             if_exists="replace", index=False,
-            method="multi", chunksize=5_000,
+            method="multi", chunksize=200,
         )
         logger.success(f"  Saved {len(pitcher_features):,} pitcher feature rows")
 

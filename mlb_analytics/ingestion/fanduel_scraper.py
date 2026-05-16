@@ -38,14 +38,22 @@ REGIONS       = "us"
 # FanDuel's bookmaker key in The Odds API
 FANDUEL_KEY   = "fanduel"
 
-# American odds → implied probability
-def american_to_implied_prob(odds: int) -> float:
-    """Convert American odds to implied (vig-inclusive) probability."""
+# American or decimal odds -> implied probability
+def american_to_implied_prob(odds) -> float:
+    """Convert odds to implied probability.
+    Handles decimal odds (1.85) and American odds (-150, +130).
+    """
     if odds is None:
         return float("nan")
-    if odds > 0:
+    odds = float(odds)
+    if 1.01 <= odds <= 20.0:
+        # Decimal format: 1.85, 1.38 etc
+        return 1.0 / odds
+    elif odds > 0:
+        # American positive: +130
         return 100.0 / (odds + 100.0)
     else:
+        # American negative: -150
         return abs(odds) / (abs(odds) + 100.0)
 
 
@@ -141,6 +149,11 @@ def fetch_moneylines_api() -> pd.DataFrame:
         })
 
     df = pd.DataFrame(rows)
+    # Deduplicate — keep only one row per matchup (best odds for each side)
+    if not df.empty:
+        df = df.sort_values("moneyline_home", ascending=False)
+        df = df.drop_duplicates(subset=["home_team", "away_team"], keep="first")
+        df = df.reset_index(drop=True)
     logger.success(f"Fetched {len(df)} moneyline rows from Odds API")
     return df
 

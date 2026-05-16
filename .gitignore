@@ -1,20 +1,9 @@
 .env
+.env.txt
+*.db
 .venv/
 __pycache__/
 *.pyc
-*.db
-models/
 cache/
-logs/
 *.log
-
-# Visual Studio
-*.vsidx
-*.slnx
-*.suo
-*.user
-*.userosscache
-*.sln.docstates
-.vs/
-*.slnx/
-FileContentIndex/
+MLBPredictionTool/

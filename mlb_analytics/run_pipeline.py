@@ -27,6 +27,7 @@ Usage:
 
 from __future__ import annotations
 
+from sqlalchemy import text
 import argparse
 import sys
 from datetime import date
@@ -112,7 +113,17 @@ def stage_train(args: argparse.Namespace) -> None:
 
     # ---- Base Hit Classifier ----
     # Target: 1 if h2h_hits > 0 (proxy; replace with actual game-level hit flag)
-    mf["target_hit"] = (mf["h2h_hits"] > 0).astype(int)
+    # Build target from statcast events directly
+    with engine.connect() as conn:
+        hits_df = pd.read_sql(text("""
+            SELECT DISTINCT game_pk, batter_id
+            FROM statcast_pitches
+            WHERE events IN ('single','double','triple','home_run')
+        """), conn)
+
+    hits_df["target_hit"] = 1
+    mf = mf.merge(hits_df, on=["game_pk", "batter_id"], how="left")
+    mf["target_hit"] = mf["target_hit"].fillna(0).astype(int)
 
     feature_cols_clf = BaseHitClassifier().features
     X = mf[[c for c in feature_cols_clf if c in mf.columns]].copy()

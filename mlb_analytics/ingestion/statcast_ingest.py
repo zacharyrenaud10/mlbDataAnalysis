@@ -12,6 +12,7 @@ Usage (CLI):
 
 from __future__ import annotations
 
+from sqlalchemy import text
 import argparse
 import time
 from datetime import date, timedelta
@@ -229,16 +230,13 @@ def fetch_batter_statcast(
 # ---------------------------------------------------------------------------
 
 def upsert_statcast_to_db(df: pd.DataFrame, if_exists: str = "append") -> int:
-    """
-    Write cleaned Statcast data to `statcast_pitches` table.
-    Uses pandas to_sql for simplicity; for production consider
-    a true UPSERT via psycopg2 + ON CONFLICT DO NOTHING.
-
-    Returns number of rows written.
-    """
     if df.empty:
         return 0
 
+    df = df.drop(columns=["is_hard_hit"], errors="ignore")
+
+    with engine.connect() as conn:
+        conn.execute(text("PRAGMA foreign_keys=OFF"))
     # Rename to match DB column names
     df = df.rename(columns={
         "batter_id": "batter_id",
@@ -253,7 +251,7 @@ def upsert_statcast_to_db(df: pd.DataFrame, if_exists: str = "append") -> int:
         if_exists=if_exists,
         index=False,
         method="multi",
-        chunksize=5_000,
+        chunksize=500,
     )
 
     rows_after = _count_rows("statcast_pitches")
