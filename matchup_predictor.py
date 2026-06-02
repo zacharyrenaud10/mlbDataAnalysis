@@ -75,6 +75,12 @@ PITCHER_AVERAGES = {
 # ---------------------------------------------------------------------------
 
 def get_batter_rolling(player_name: str) -> dict:
+    # Strip accents for database matching
+    import unicodedata
+    player_name = "".join(
+        c for c in unicodedata.normalize("NFD", player_name)
+        if unicodedata.category(c) != "Mn"
+    )
     try:
         query = text("""
             SELECT brf.*
@@ -89,7 +95,38 @@ def get_batter_rolling(player_name: str) -> dict:
             row = pd.read_sql(query, conn,
                               params={"name": f"%{player_name.lower()}%"})
         if not row.empty:
-            return row.iloc[0].to_dict()
+            result = row.iloc[0].to_dict()
+            # Blend in season barrel% and xSLG from Savant for better HR differentiation
+            try:
+                season_query = text("""
+                    SELECT s.barrel_pct, s.xslg, s.avg_exit_velo, s.hard_hit_pct
+                    FROM savant_batter_season s
+                    JOIN players p ON p.player_id = s.player_id
+                    WHERE LOWER(p.full_name) LIKE :name
+                      AND s.season = 2026
+                    LIMIT 1
+                """)
+                with engine.connect() as conn:
+                    season = pd.read_sql(season_query, conn,
+                                        params={"name": f"%{player_name.lower()}%"})
+                if not season.empty:
+                    s = season.iloc[0]
+                    # Blend 60% rolling + 40% season for stability
+                    if s["barrel_pct"] and float(s["barrel_pct"]) > 0:
+                        result["barrel_pct"] = (
+                            float(result.get("barrel_pct", 0.08) or 0.08) * 0.6 +
+                            float(s["barrel_pct"]) * 0.4
+                        )
+                    if s["xslg"] and float(s["xslg"]) > 0:
+                        result["xslg"] = float(s["xslg"])
+                    if s["avg_exit_velo"] and float(s["avg_exit_velo"]) > 0:
+                        result["avg_exit_velo"] = (
+                            float(result.get("avg_exit_velo", 88.5) or 88.5) * 0.6 +
+                            float(s["avg_exit_velo"]) * 0.4
+                        )
+            except Exception:
+                pass
+            return result
     except Exception as exc:
         logger.debug(f"DB lookup failed for {player_name}: {exc}")
     return {}
@@ -357,7 +394,7 @@ def _build_all_batter_props() -> list[dict]:
                     "game":     f"{away} @ {home}",
                     "hit_prob": props.get("hit_1plus",     0.28),
                     "tb2_prob": props.get("total_bases_2", 0.21),
-                    "hr_prob":  props.get("hr_1plus",      0.055),
+                    "hr_prob":  min(props.get("hr_1plus", 0.055) * 1.8, 0.35),
                     "k_prob":   props.get("k_1plus",       0.31) * ump_k,
                     "bb_prob":  props.get("walk_1plus",    0.125),
                     "weather":  weather,

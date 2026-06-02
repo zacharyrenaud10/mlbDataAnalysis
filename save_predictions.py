@@ -187,6 +187,18 @@ def save_todays_predictions(game_date: str) -> None:
                 },
             })
 
+    # Save lineups snapshot for backtesting
+    try:
+        from daily_lineup import TODAYS_LINEUPS, TODAYS_STARTERS
+        lineup_path = f"cache/lineups_{game_date}.json"
+        import os
+        if not os.path.exists(lineup_path):
+            with open(lineup_path, "w", encoding="utf-8") as f:
+                json.dump(TODAYS_LINEUPS, f, indent=2)
+            logger.info(f"Saved lineup snapshot to {lineup_path}")
+    except Exception as e:
+        logger.debug(f"Could not save lineup snapshot: {e}")
+
     # Save to file
     out_path = f"cache/predictions_{game_date}.json"
     with open(out_path, "w", encoding="utf-8") as f:

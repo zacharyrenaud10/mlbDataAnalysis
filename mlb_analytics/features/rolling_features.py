@@ -53,6 +53,7 @@ def _batter_game_aggregates(df: pd.DataFrame) -> pd.DataFrame:
         "sac_fly", "sac_bunt",
     }
     df["is_hit"]         = df["events"].isin(hit_events)
+    df["is_barrel"]      = (df["launch_speed"] >= 98) & (df["launch_angle"].between(26, 30))
     df["is_pa_end"]      = df["events"].isin(pa_end_events)
     df["is_k"]           = df["events"].isin({"strikeout", "strikeout_double_play"})
     df["is_bb"]          = df["events"].isin({"walk"})
@@ -67,6 +68,7 @@ def _batter_game_aggregates(df: pd.DataFrame) -> pd.DataFrame:
         avg_ev         = ("launch_speed",  lambda x: x[x.notna()].mean()),
         avg_la         = ("launch_angle",  lambda x: x[x.notna()].mean()),
         hard_hit_cnt   = ("is_hard_hit",  "sum"),
+        barrel_cnt     = ("is_barrel",    "sum"),
         balls_in_play  = ("is_in_play",   "sum"),
         swings         = ("is_swing",     "sum"),
         whiffs         = ("is_whiff",     "sum"),
@@ -77,6 +79,7 @@ def _batter_game_aggregates(df: pd.DataFrame) -> pd.DataFrame:
     g["k_pct"]       = g["k"]  / g["pa"].replace(0, np.nan)
     g["bb_pct"]      = g["bb"] / g["pa"].replace(0, np.nan)
     g["hard_hit_pct"]= g["hard_hit_cnt"] / g["balls_in_play"].replace(0, np.nan)
+    g["barrel_pct"]  = g["barrel_cnt"]   / g["balls_in_play"].replace(0, np.nan)
     g["whiff_pct"]   = g["whiffs"] / g["swings"].replace(0, np.nan)
     g["ba"]          = g["hits"] / g["pa"].replace(0, np.nan)
     g["woba"]        = g["woba_sum"] / g["woba_cnt"].replace(0, np.nan)
@@ -126,6 +129,8 @@ def compute_batter_rolling(
                 "avg_exit_velo":   window_df["avg_ev"].mean(),
                 "avg_launch_angle":window_df["avg_la"].mean(),
                 "hard_hit_pct":    window_df["hard_hit_cnt"].sum() /
+                                   max(window_df["balls_in_play"].sum(), 1),
+                "barrel_pct":      window_df["barrel_cnt"].sum() /
                                    max(window_df["balls_in_play"].sum(), 1),
                 "k_pct":           window_df["k"].sum() / max(total_pa, 1),
                 "bb_pct":          window_df["bb"].sum() / max(total_pa, 1),

@@ -26,6 +26,17 @@ load_dotenv()
 
 from mlb_analytics.db import engine
 
+def load_team_ratings() -> dict:
+    """Load Elo and Pythagorean ratings from cache."""
+    try:
+        with open("cache/team_ratings.json", encoding="utf-8") as f:
+            data = json.load(f)
+        return data.get("teams", {})
+    except Exception:
+        return {}
+
+TEAM_RATINGS = load_team_ratings()
+
 # ---------------------------------------------------------------------------
 # Team name mapping (Odds API full names -> our abbreviations)
 # ---------------------------------------------------------------------------
@@ -631,6 +642,33 @@ def calculate_win_probability_ensemble(
     p_d = win_prob_from_scores(fallback_home, fallback_away, h_sp_d, a_sp_d)
     perspectives.append(("SeasonFallback", p_d))
 
+    # --- Perspective E: Elo ratings ---
+    try:
+        home_elo = TEAM_RATINGS.get(home_team, {}).get("elo", 1500)
+        away_elo = TEAM_RATINGS.get(away_team, {}).get("elo", 1500)
+        if home_elo and away_elo:
+            elo_home_prob = 1.0 / (1.0 + 10 ** ((away_elo - home_elo) / 400.0))
+            # Add small home field advantage
+            elo_home_prob = min(0.80, elo_home_prob + 0.02)
+            perspectives.append(("Elo", elo_home_prob))
+    except Exception:
+        pass
+
+    # --- Perspective F: Pythagorean win% ---
+    try:
+        home_pyth = TEAM_RATINGS.get(home_team, {}).get("pythag_wpct", 0.500)
+        away_pyth = TEAM_RATINGS.get(away_team, {}).get("pythag_wpct", 0.500)
+        home_luck = TEAM_RATINGS.get(home_team, {}).get("luck", 0.0)
+        away_luck = TEAM_RATINGS.get(away_team, {}).get("luck", 0.0)
+        if home_pyth and away_pyth:
+            # Pythagorean matchup prob + luck correction (lucky teams get penalized)
+            pyth_edge = (home_pyth - away_pyth) * 0.5
+            luck_adj  = (away_luck - home_luck) * 0.1  # fade lucky teams
+            pyth_prob = max(0.35, min(0.70, 0.50 + pyth_edge + luck_adj + 0.02))
+            perspectives.append(("Pythagorean", pyth_prob))
+    except Exception:
+        pass
+
     # --- Combine ---
     probs   = [p for _, p in perspectives]
     mean_p  = sum(probs) / len(probs)
@@ -648,6 +686,65 @@ def calculate_win_probability_ensemble(
     # only 35% on away picks, meaning home advantage is overweighted
     # Shrink probabilities slightly toward 50% to correct this
     home_prob = home_prob * 0.92 + 0.5 * 0.08
+
+    # --- Streak + Run Differential Adjustment ---
+    try:
+        from mlb_analytics.db import engine
+        from sqlalchemy import text as sqla_text
+        import pandas as pd
+
+        def get_team_streak(team, as_of=None):
+            """Get win/loss streak and avg run diff from last 10 games via Statcast."""
+            try:
+                q = sqla_text("""
+                    SELECT game_pk, game_date,
+                           MAX(CASE WHEN inning_topbot = 'Bot' THEN pitcher_team END) as home_team,
+                           MAX(CASE WHEN inning_topbot = 'Top' THEN pitcher_team END) as away_team,
+                           MAX(bat_score) as home_score,
+                           MAX(fld_score) as away_score
+                    FROM statcast_pitches
+                    WHERE (pitcher_team = :team OR batter_team = :team)
+                      AND game_date <= :dt
+                    GROUP BY game_pk, game_date
+                    HAVING home_team IS NOT NULL AND away_team IS NOT NULL
+                    ORDER BY game_date DESC
+                    LIMIT 10
+                """)
+                dt = as_of or __import__('datetime').date.today().isoformat()
+                with engine.connect() as conn:
+                    df = pd.read_sql(q, conn, params={"team": team, "dt": dt})
+                if df.empty:
+                    return 0, 0
+                wins = 0
+                run_diffs = []
+                for _, row in df.iterrows():
+                    is_home = row["home_team"] == team
+                    if is_home:
+                        won = row["home_score"] > row["away_score"]
+                        rd  = row["home_score"] - row["away_score"]
+                    else:
+                        won = row["away_score"] > row["home_score"]
+                        rd  = row["away_score"] - row["home_score"]
+                    wins += int(won)
+                    run_diffs.append(rd)
+                win_pct = wins / len(df)
+                avg_rd  = sum(run_diffs) / len(run_diffs)
+                return win_pct, avg_rd
+            except Exception:
+                return 0.5, 0
+
+        home_wpct, home_rd = get_team_streak(home_team)
+        away_wpct, away_rd = get_team_streak(away_team)
+
+        # Streak adjustment: teams on hot streaks get small boost
+        streak_adj = (home_wpct - away_wpct) * 0.03
+        # Run diff adjustment: teams outscoring opponents get small boost
+        rd_adj = (home_rd - away_rd) * 0.002
+        total_adj = max(-0.04, min(0.04, streak_adj + rd_adj))
+        home_prob = max(0.20, min(0.80, home_prob + total_adj))
+    except Exception:
+        pass
+
     away_prob = 1.0 - home_prob
 
     factors = {
@@ -974,7 +1071,7 @@ def _print_parlay_group(parlays: list, title: str, desc: str) -> None:
                 f"[{leg['grade']}]  {src}"
             )
             print(f"         Off: {leg['home_offense']:.0f}  "
-                  f"SP: {leg['away_pitcher_score']:.0f}  "
+                  f"SP: {leg['away_pitcher_score'] if leg.get('is_home_pick') else leg['home_pitcher_score']:.0f}  "
                   f"Edge: {leg['edge']*100:+.1f}pp{w_str}")
 
         if p["ev"] > 0:
@@ -1085,3 +1182,9 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+    # Auto-save predictions after every run
+    try:
+        import subprocess, sys
+        subprocess.run([sys.executable, "save_predictions.py"], check=False)
+    except Exception:
+        pass

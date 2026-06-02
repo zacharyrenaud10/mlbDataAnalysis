@@ -35,8 +35,16 @@ import numpy as np
 import pandas as pd
 from loguru import logger
 from sklearn.calibration import CalibratedClassifierCV
+from sklearn.ensemble import RandomForestClassifier, VotingClassifier
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
+from sklearn.model_selection import TimeSeriesSplit
 from xgboost import XGBClassifier, XGBRegressor
+try:
+    from lightgbm import LGBMClassifier
+    HAS_LGBM = True
+except ImportError:
+    HAS_LGBM = False
 
 MODEL_DIR = Path(os.getenv("MODEL_DIR", "./models"))
 MODEL_DIR.mkdir(parents=True, exist_ok=True)
@@ -143,7 +151,8 @@ class PlayerPropsModel:
             Xt, Xv = X.iloc[:split], X.iloc[split:]
             yt, yv = y.iloc[:split], y.iloc[split:]
 
-            base = XGBClassifier(
+            # --- XGBoost ---
+            xgb = XGBClassifier(
                 n_estimators=300,
                 max_depth=4,
                 learning_rate=0.05,
@@ -155,14 +164,84 @@ class PlayerPropsModel:
                 random_state=42,
                 n_jobs=-1,
             )
-            base.fit(Xt, yt, eval_set=[(Xv, yv)], verbose=False)
+            xgb.fit(Xt, yt, eval_set=[(Xv, yv)], verbose=False)
 
-            cal = CalibratedClassifierCV(base, method="isotonic", cv="prefit")
+            # --- Random Forest ---
+            rf = RandomForestClassifier(
+                n_estimators=200,
+                max_depth=6,
+                min_samples_leaf=20,
+                class_weight="balanced",
+                random_state=42,
+                n_jobs=-1,
+            )
+            rf.fit(Xt, yt)
+
+            # --- Logistic Regression ---
+            lr = LogisticRegression(
+                C=0.1,
+                class_weight="balanced",
+                max_iter=3000,
+                random_state=42,
+            )
+            lr.fit(Xt, yt)
+
+            # --- LightGBM (if available) ---
+            estimators = [("xgb", xgb), ("rf", rf), ("lr", lr)]
+            if HAS_LGBM:
+                lgbm = LGBMClassifier(
+                    n_estimators=300,
+                    max_depth=4,
+                    learning_rate=0.05,
+                    subsample=0.8,
+                    class_weight="balanced",
+                    random_state=42,
+                    n_jobs=-1,
+                    verbose=-1,
+                )
+                lgbm.fit(Xt, yt)
+                estimators.append(("lgbm", lgbm))
+
+            # --- Voting Ensemble ---
+            ensemble = VotingClassifier(
+                estimators=estimators,
+                voting="soft",
+                weights=[3, 2, 1] + ([2] if HAS_LGBM else []),
+            )
+            ensemble.fit(Xt, yt)
+
+            # Calibrate the ensemble
+            cal = CalibratedClassifierCV(ensemble, method="isotonic", cv="prefit")
             cal.fit(Xv, yv)
 
             proba = cal.predict_proba(Xv)[:, 1]
             auc   = roc_auc_score(yv, proba)
-            logger.info(f"    AUC={auc:.4f}")
+
+            # Cross-validation AUC
+            tscv = TimeSeriesSplit(n_splits=3)
+            cv_aucs = []
+            for train_idx, val_idx in tscv.split(X):
+                Xtr, Xval = X.iloc[train_idx], X.iloc[val_idx]
+                ytr, yval = y.iloc[train_idx], y.iloc[val_idx]
+                if len(yval.unique()) < 2:
+                    continue
+                ensemble_cv = VotingClassifier(
+                    estimators=[
+                        ("xgb", XGBClassifier(n_estimators=100, max_depth=4,
+                            learning_rate=0.05, use_label_encoder=False,
+                            eval_metric="logloss", random_state=42, n_jobs=-1)),
+                        ("rf",  RandomForestClassifier(n_estimators=100,
+                            max_depth=6, random_state=42, n_jobs=-1)),
+                        ("lr",  LogisticRegression(C=0.1, max_iter=1000,
+                            random_state=42)),
+                    ],
+                    voting="soft",
+                )
+                ensemble_cv.fit(Xtr, ytr)
+                cv_aucs.append(roc_auc_score(yval, ensemble_cv.predict_proba(Xval)[:, 1]))
+
+            cv_mean = sum(cv_aucs) / len(cv_aucs) if cv_aucs else auc
+            logger.info(f"    AUC={auc:.4f}  CV-AUC={cv_mean:.4f}")
 
             self.models[target] = cal
 
@@ -332,8 +411,8 @@ class PlayerPropsModel:
                 results[target] = self._pop_avg_pitcher(target)
 
         if "pitcher_k" in self.regressors:
-            results["expected_k"] = round(
-                float(self.regressors["pitcher_k"].predict(X)[0]), 2
+            raw_k = float(self.regressors["pitcher_k"].predict(X)[0])
+            results["expected_k"] = round(min(raw_k, 12.0), 2
             )
         else:
             results["expected_k"] = round(
